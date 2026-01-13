@@ -27,3 +27,6 @@ spacy>=3.7.0
 # Document Processing
 python-docx>=1.1.0
 PyPDF2>=3.0.0
+
+# HTTP Client for Ollama
+requests>=2.31.0

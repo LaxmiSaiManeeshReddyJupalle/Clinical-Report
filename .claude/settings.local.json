@@ -3,7 +3,12 @@
     "allow": [
       "Bash(python3:*)",
       "Bash(source:*)",
-      "Bash(python -m spacy:*)"
+      "Bash(python -m spacy:*)",
+      "Bash(python -m src.ingestion.mock_data_generator:*)",
+      "Bash(python:*)",
+      "Bash(pip install:*)",
+      "Bash(pip show:*)",
+      "Bash(curl:*)"
     ]
   }
 }

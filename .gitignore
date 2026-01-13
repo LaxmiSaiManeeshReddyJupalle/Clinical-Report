@@ -54,6 +54,7 @@ wheels/
 # Data & Cache (may contain PHI)
 # -----------------------------------------------------------------------------
 data/
+mock_data/
 *.db
 *.sqlite
 *.sqlite3

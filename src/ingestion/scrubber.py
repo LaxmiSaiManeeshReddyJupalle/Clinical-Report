@@ -13,13 +13,182 @@ from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 from enum import Enum
 
-from presidio_analyzer import AnalyzerEngine, RecognizerResult
+from presidio_analyzer import AnalyzerEngine, RecognizerResult, Pattern, PatternRecognizer
 from presidio_anonymizer import AnonymizerEngine
 from presidio_anonymizer.entities import OperatorConfig
 
 # Configure logging (no PHI in logs)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Custom Recognizers for Enhanced PII Detection
+# =============================================================================
+
+class SSNRecognizer(PatternRecognizer):
+    """
+    Custom recognizer for US Social Security Numbers.
+
+    Handles various SSN formats including:
+    - 123-45-6789
+    - 123 45 6789
+    - 123456789
+    """
+
+    PATTERNS = [
+        Pattern(
+            "SSN_DASHES",
+            r"\b\d{3}-\d{2}-\d{4}\b",
+            0.85
+        ),
+        Pattern(
+            "SSN_SPACES",
+            r"\b\d{3}\s\d{2}\s\d{4}\b",
+            0.85
+        ),
+        Pattern(
+            "SSN_NO_DELIM",
+            r"\b\d{9}\b",
+            0.4  # Lower confidence without delimiters
+        ),
+    ]
+
+    CONTEXT = ["ssn", "social security", "social security number", "ss#", "ss #"]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="US_SSN",
+            name="CustomSSNRecognizer",
+            patterns=self.PATTERNS,
+            context=self.CONTEXT,
+            supported_language="en"
+        )
+
+
+class PhoneRecognizer(PatternRecognizer):
+    """
+    Custom recognizer for US phone numbers.
+
+    Handles formats:
+    - (555) 123-4567
+    - 555-123-4567
+    - 555.123.4567
+    - 5551234567
+    """
+
+    PATTERNS = [
+        Pattern(
+            "PHONE_PARENS",
+            r"\(\d{3}\)\s*\d{3}[-.\s]?\d{4}",
+            0.85
+        ),
+        Pattern(
+            "PHONE_DASHES",
+            r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b",
+            0.75
+        ),
+        Pattern(
+            "PHONE_NO_DELIM",
+            r"\b\d{10}\b",
+            0.4
+        ),
+    ]
+
+    CONTEXT = ["phone", "telephone", "tel", "cell", "mobile", "fax", "contact"]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="PHONE_NUMBER",
+            name="CustomPhoneRecognizer",
+            patterns=self.PATTERNS,
+            context=self.CONTEXT,
+            supported_language="en"
+        )
+
+
+class MRNRecognizer(PatternRecognizer):
+    """
+    Custom recognizer for Medical Record Numbers.
+
+    Common MRN patterns in healthcare settings.
+    """
+
+    PATTERNS = [
+        Pattern(
+            "MRN_ALPHA_NUM",
+            r"\b[A-Z]{2,3}\d{6,10}\b",
+            0.7
+        ),
+        Pattern(
+            "MRN_NUM",
+            r"\b\d{7,10}\b",
+            0.3  # Low confidence without context
+        ),
+    ]
+
+    CONTEXT = ["mrn", "medical record", "patient id", "chart number", "record number"]
+
+    def __init__(self):
+        super().__init__(
+            supported_entity="MEDICAL_RECORD_NUMBER",
+            name="CustomMRNRecognizer",
+            patterns=self.PATTERNS,
+            context=self.CONTEXT,
+            supported_language="en"
+        )
+
+
+def create_analyzer_with_custom_recognizers() -> AnalyzerEngine:
+    """
+    Create an AnalyzerEngine with custom recognizers for healthcare PII.
+
+    Returns:
+        AnalyzerEngine with enhanced recognition capabilities
+    """
+    from presidio_analyzer import RecognizerRegistry
+    from presidio_analyzer.nlp_engine import NlpEngineProvider, SpacyNlpEngine
+    from presidio_analyzer.predefined_recognizers import (
+        EmailRecognizer,
+        UsSsnRecognizer,
+        SpacyRecognizer,
+        DateRecognizer,
+    )
+
+    # Create NLP engine directly
+    try:
+        nlp_engine = SpacyNlpEngine(models=[{"lang_code": "en", "model_name": "en_core_web_lg"}])
+    except Exception:
+        # Fallback to default
+        provider = NlpEngineProvider(nlp_configuration={
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}]
+        })
+        nlp_engine = provider.create_engine()
+
+    # Create empty registry and add only the recognizers we need manually
+    registry = RecognizerRegistry()
+
+    # Add essential predefined recognizers manually (avoiding the buggy loader)
+    registry.add_recognizer(SpacyRecognizer(supported_language="en"))
+    registry.add_recognizer(EmailRecognizer(supported_language="en"))
+    registry.add_recognizer(UsSsnRecognizer(supported_language="en"))
+    registry.add_recognizer(DateRecognizer(supported_language="en"))
+
+    # Add our custom recognizers
+    registry.add_recognizer(SSNRecognizer())
+    registry.add_recognizer(PhoneRecognizer())
+    registry.add_recognizer(MRNRecognizer())
+
+    # Create analyzer with our custom registry
+    analyzer = AnalyzerEngine(
+        registry=registry,
+        nlp_engine=nlp_engine,
+        supported_languages=["en"]
+    )
+
+    logger.info("Custom PII recognizers registered (SSN, Phone, MRN)")
+    return analyzer
 
 
 class PIIType(Enum):
@@ -74,6 +243,7 @@ class PIIScrubber:
         "US_PASSPORT",
         "DATE_TIME",  # Dates can be PHI
         "LOCATION",   # Geographic data
+        "MEDICAL_RECORD_NUMBER",  # Custom recognizer
     ]
 
     # Default redaction format
@@ -100,9 +270,9 @@ class PIIScrubber:
         self.score_threshold = score_threshold
         self.language = language
 
-        # Initialize Presidio engines
+        # Initialize Presidio engines with custom recognizers
         logger.info("Initializing PII detection engines")
-        self._analyzer = AnalyzerEngine()
+        self._analyzer = create_analyzer_with_custom_recognizers()
         self._anonymizer = AnonymizerEngine()
         logger.info(f"PII Scrubber initialized. Detecting {len(self.entities)} entity types.")
 
@@ -308,6 +478,7 @@ class HealthcarePIIScrubber(PIIScrubber):
         "US_PASSPORT",      # Other IDs
         "IP_ADDRESS",       # IP addresses
         "URL",              # URLs
+        "MEDICAL_RECORD_NUMBER",  # Custom recognizer
     ]
 
     def __init__(self, **kwargs):
